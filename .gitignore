@@ -1,0 +1,29 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 运行时产物 ----
+wallpaper_service/cache/
+*.log
+
+# ---- 字体（版权原因不入库，自行放入 wallpaper_service/fonts/）----
+wallpaper_service/fonts/*.ttf
+wallpaper_service/fonts/*.ttc
+wallpaper_service/fonts/*.otf
+!wallpaper_service/fonts/README.md
+!wallpaper_service/fonts/.gitkeep
+
+# ---- 生成的图片 ----
+weather_wallpaper.png
+*.png.tmp
+out/
+sample_*.png
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

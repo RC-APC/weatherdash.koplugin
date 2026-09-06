@@ -102,7 +102,7 @@ weatherdash-koreader/
 ├── koplugin/
 │   └── Weatherdash.koplugin/     # KOReader 插件
 │       ├── main.lua              #   渲染主逻辑（luaparse 校验通过）
-│       ├── _meta.lua             #   元数据（version = 3.3.9）
+│       ├── _meta.lua             #   元数据（version = 3.3.10）
 │       ├── fonts/
 │       │   └── fa-weather.ttf    #   FontAwesome 6 Free Solid 子集（4.7KB，仅字形）
 │       └── icons/                #   天气图标库 PNG（与 loeffner/WeatherLockscreen 同款思路）

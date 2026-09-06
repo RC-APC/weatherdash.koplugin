@@ -436,7 +436,9 @@ function Weatherdash:fetchWeather(lat, lon, unit)
     local url = string.format(
         "%s?latitude=%.4f&longitude=%.4f&current=temperature_2m,weather_code"
         .. "&hourly=temperature_2m,weather_code&daily=sunrise,sunset"
-        .. "&forecast_days=1&timezone=auto&temperature_unit=%s",
+        -- forecast_days=2：时序条要取「当前小时 +12h」的点，若只取 1 天，
+        -- 过了中午 +12h 就超出当天 24 条被截断（表现为时序条只剩 9 小时）
+        .. "&forecast_days=2&timezone=auto&temperature_unit=%s",
         OPEN_METEO, lat, lon, ut)
     http.TIMEOUT = 25
     local resp = {}

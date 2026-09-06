@@ -1266,6 +1266,12 @@ function Weatherdash:applyWeather(interactive)
     if interactive then
         UIManager:show(InfoMessage:new{ text = "正在获取天气并生成本地壁纸：" .. (self.my_city or DEFAULT_CITY) .. "…" })
     end
+    -- 记录「上次更新模式 = 黄历」，锁屏自动刷新沿用
+    self.last_mode = "lunar"
+    pcall(function()
+        self.settings:saveSetting("last_mode", "lunar")
+        self.settings:flush()
+    end)
     UIManager:scheduleIn(0.1, function()
         trace("== applyWeather (lunar) ==")
         local lat, lon = self:resolveCoords()
@@ -1289,6 +1295,16 @@ function Weatherdash:applyCoverWallpaper(file, name)
         UIManager:show(InfoMessage:new{ text = "无法定位该书文件路径。" })
         return
     end
+    -- 记录「上次更新模式 = 封面」，并记住所选书籍，锁屏自动刷新沿用
+    self.last_mode = "cover"
+    self.last_cover_file = file
+    self.last_cover_name = name or ""
+    pcall(function()
+        self.settings:saveSetting("last_mode", "cover")
+        self.settings:saveSetting("last_cover_file", file)
+        self.settings:saveSetting("last_cover_name", name or "")
+        self.settings:flush()
+    end)
     UIManager:show(InfoMessage:new{ text = "正在获取天气并提取封面：\n" .. tostring(name or "") .. "\n（城市：" .. (self.my_city or DEFAULT_CITY) .. "）" })
     UIManager:scheduleIn(0.1, function()
         trace("== applyCoverWallpaper ==")
@@ -1398,9 +1414,17 @@ function Weatherdash:shouldAutoRun()
     return true
 end
 
-function Weatherdash:runAutoUpdate(force)
+-- 用「上次手动选择的模式」（黄历 / 封面）刷新壁纸，写入屏保目录。
+-- 供：① 每次锁屏（onSuspend）② 每日自动更新轮询 ③ 菜单「立即更新一次」共用。
+-- 返回 true/false；联网失败 / 取数失败 → 写状态、返回 false（绝不崩）。
+function Weatherdash:updateUsingLastMode(interactive)
+    -- 同一锁屏事件可能被重复触发，30 秒内只刷一次，避免重复联网
+    local now_ts = os.time()
+    if self.last_lock_ts and (now_ts - self.last_lock_ts) < 30 then
+        return false
+    end
+    self.last_lock_ts = now_ts
     local ok, ran = pcall(function()
-        if not force and not self:shouldAutoRun() then return false end
         local isOnline = true
         local ok_mgr, mgr = pcall(function() return require("ui/network/manager") end)
         if ok_mgr and mgr then
@@ -1417,27 +1441,62 @@ function Weatherdash:runAutoUpdate(force)
             pcall(function() self.settings:saveSetting("last_auto_status", self.last_auto_status); self.settings:flush() end)
             return false
         end
+        local lat, lon = self:resolveCoords()
+        local wx, err = self:fetchWeather(lat, lon, self.unit or "C")
+        if not wx then
+            self.last_auto_status = "失败 " .. _nowStamp() .. "（" .. tostring(err) .. "）"
+            pcall(function() self.settings:saveSetting("last_auto_status", self.last_auto_status); self.settings:flush() end)
+            return false
+        end
+        local lunar = self:getLunarInfo(os.date("*t"))
+        resolveColors()  -- 颜色按本机 BB 类型解析（运行期）
+        -- 封面模式：按记忆的书重新提取封面；取不到则回落黄历
+        local cover_bb
+        if self.last_mode == "cover" and self.last_cover_file and self.last_cover_file ~= "" then
+            local ok_p, cbb = pcall(function() return self:getCoverBB(self.last_cover_file) end)
+            if ok_p and cbb then cover_bb = cbb else cover_bb = nil end
+        end
+        local bb = self:renderWallpaper(wx, lunar, cover_bb)
+        if cover_bb and cover_bb.free then pcall(function() cover_bb:free() end) end
+        if not bb then
+            self.last_auto_status = "失败 " .. _nowStamp() .. "（合成失败）"
+            pcall(function() self.settings:saveSetting("last_auto_status", self.last_auto_status); self.settings:flush() end)
+            return false
+        end
+        local ok_s, msg = self:saveBB(bb)
+        pcall(function() if bb.free then bb:free() end end)
+        self._lastOut = msg
+        if ok_s then
+            self.last_auto_status = "成功 " .. _nowStamp()
+            pcall(function() self.settings:saveSetting("last_auto_status", self.last_auto_status); self.settings:flush() end)
+        end
+        return ok_s
+    end)
+    if not ok then
+        local detail = tostring(ran or "?")
+        if #detail > 60 then detail = detail:sub(1, 60) .. "…" end
+        self.last_auto_status = "异常：" .. detail .. " " .. _nowStamp()
+        pcall(function() self.settings:saveSetting("last_auto_status", self.last_auto_status); self.settings:flush() end)
+        if interactive then UIManager:show(InfoMessage:new{ text = "更新异常：\n" .. self.last_auto_status }) end
+        return false
+    end
+    if interactive then
+        if ran then
+            UIManager:show(InfoMessage:new{ text = "已更新（" .. (self.last_mode == "cover" and "书籍封面" or "黄历") .. "模式）\n保存到：" .. (self._lastOut or "") .. "\n\n让设备休眠即可看到。" })
+        else
+            UIManager:show(InfoMessage:new{ text = "更新失败：\n" .. self.last_auto_status .. "\n请确认已联网（首次使用需联网拉取天气）。" })
+        end
+    end
+    return ran
+end
+
+function Weatherdash:runAutoUpdate(force)
+    local ok, ran = pcall(function()
+        if not force and not self:shouldAutoRun() then return false end
         local today = os.date("%Y-%m-%d")
         self.last_auto_date = today
         pcall(function() self.settings:saveSetting("last_auto_date", today) end)
-        local lat, lon = self:resolveCoords()
-        local wx, err = self:fetchWeather(lat, lon, self.unit or "C")
-        if wx then
-            local lunar = self:getLunarInfo(os.date("*t"))
-            resolveColors()  -- 颜色按本机 BB 类型解析（运行期）
-            local bb = self:renderWallpaper(wx, lunar, nil)
-            if bb then
-                local ok_s = self:saveBB(bb)
-                pcall(function() if bb.free then bb:free() end end)
-                if ok_s then self.last_auto_status = "成功 " .. _nowStamp() end
-            else
-                self.last_auto_date = ""; self.last_auto_status = "失败 " .. _nowStamp() .. "（稍后重试）"
-            end
-        else
-            self.last_auto_date = ""; self.last_auto_status = "失败 " .. _nowStamp() .. "（稍后重试）"
-        end
-        pcall(function() self.settings:saveSetting("last_auto_status", self.last_auto_status); self.settings:flush() end)
-        return true
+        return self:updateUsingLastMode(false)
     end)
     if not ok then
         local detail = tostring(ran or "?")
@@ -1460,8 +1519,12 @@ function Weatherdash:onResume()
     UIManager:scheduleIn(3, function() self:runAutoUpdate(false) end)
     return false
 end
+-- 锁屏（休眠）触发：用上次选择的模式刷新一次壁纸（沿用 黄历 / 封面 选择）。
+-- 受「自动更新」总开关控制；30 秒内重复触发由 updateUsingLastMode 内部去重。
 function Weatherdash:onSuspend()
-    pcall(function() self:runAutoUpdate(false) end)
+    if self.auto_enabled then
+        pcall(function() self:updateUsingLastMode(false) end)
+    end
     return false
 end
 
@@ -1481,11 +1544,16 @@ function Weatherdash:init()
         self.auto_hour     = tonumber(self.settings:readSetting("auto_hour")) or 6
         self.last_auto_date   = self.settings:readSetting("last_auto_date") or ""
         self.last_auto_status = self.settings:readSetting("last_auto_status") or ""
+        -- 上次手动选择的更新模式（锁屏自动刷新沿用此模式）
+        self.last_mode         = self.settings:readSetting("last_mode") or "lunar"
+        self.last_cover_file   = self.settings:readSetting("last_cover_file") or ""
+        self.last_cover_name   = self.settings:readSetting("last_cover_name") or ""
     end)
     if not ok then
         self.my_city = DEFAULT_CITY; self.my_lat = nil; self.my_lon = nil
         self.unit = "C"; self.auto_enabled = true; self.auto_hour = 6
         self.last_auto_date = ""; self.last_auto_status = ""
+        self.last_mode = "lunar"; self.last_cover_file = ""; self.last_cover_name = ""
     end
     local reg_ok = pcall(function() self.ui.menu:registerToMainMenu(self) end)
     if not reg_ok then
@@ -1559,7 +1627,11 @@ function Weatherdash:buildSubmenu()
     ut[#ut + 1] = { text_func = function() return "更新时间：" .. string.format("%02d:00", self.auto_hour) .. " 之后" end, sub_item_table = ht }
     ut[#ut + 1] = { text_func = function() return "上次更新：" .. (self.last_auto_status ~= "" and self.last_auto_status or "尚未执行") end,
         callback = function() UIManager:show(InfoMessage:new{ text = "上次自动更新：" .. (self.last_auto_status ~= "" and self.last_auto_status or "尚未执行") .. "\n今天：" .. os.date("%Y-%m-%d %H:%M") }) end }
-    ut[#ut + 1] = { text = "立即更新一次", callback = function() self:applyWeather(true) end }
+    ut[#ut + 1] = { text_func = function()
+        return "锁屏刷新模式：" .. (self.last_mode == "cover"
+            and ("书籍封面（" .. (self.last_cover_name ~= "" and self.last_cover_name or "上次所选") .. "）")
+            or "黄历（上次所选）") end, enabled = false }
+    ut[#ut + 1] = { text = "立即更新一次", callback = function() self:updateUsingLastMode(true) end }
     t[#t + 1] = { text_func = function() return "每日自动更新：" .. (self.auto_enabled and "开" or "关") end, sub_item_table = ut }
 
     t[#t + 1] = { text = "使用说明", callback = function()
@@ -1573,7 +1645,10 @@ function Weatherdash:buildSubmenu()
             .. "  免费、无 Key），黄历由插件内置算法本地计算。\n"
             .. "· 「我的位置」：IP 自动定位 / 90+ 城市（open-meteo 解析坐标）。\n"
             .. "· 「温度单位」：切换 ℃ / ℉。\n"
-            .. "· 「每日自动更新」：唤醒 / 休眠前 / 每 30 分钟轮询补做。\n\n"
+            .. "· 「每日自动更新」：唤醒 / 休眠前 / 每 30 分钟轮询补做。\n"
+            .. "· 每次锁屏（休眠）会按「上次选择的模式」刷新一次：\n"
+            .. "  手动点过「黄历」或某本「封面」后，之后每次锁屏都沿用该模式\n"
+            .. "  （封面模式会重新提取上次那本书的封面）。\n\n"
             .. "数据来源：open-meteo（天气 / 地理编码，CC BY 4.0）+ 内置农历算法。\n"
             .. "本插件只写 PNG 不解码图片，故不会像图片模式那样崩出。\n\n"
             .. "小贴士：与「看板壁纸」（DashWallpaper）共享屏保文件\n"

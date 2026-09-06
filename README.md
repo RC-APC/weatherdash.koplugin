@@ -1,175 +1,192 @@
-# Weatherdash · KOReader 天气壁纸
+# Weatherdash · KOReader 天气壁纸（纯本地版 v3.3）
 
 把**实时天气**变成 Kindle / KOReader 设备的**休眠屏保壁纸**：
-竖屏大图上，上半屏是城市、日期、天气大图标、超大当前温度与 5 小时预测，
+竖屏大图上，上半屏是城市、日期、天气图标、超大当前温度与 12 小时预测，
 下半屏可二选一展示 **当日黄历（农历 + 宜/忌）** 或 **最近阅读书籍封面**。
 
-全链路使用**免费无 Key** 的数据源（open-meteo 天气、ip-api 定位、cnlunar 黄历），
-渲染全部发生在**你自己的服务端**（本地或云端都行），Kindle 端插件**只下载字节、
-写屏保目录，绝不解码图片**——因此在图片渲染路径易崩的精简/定制版 KOReader 上
-也不会闪退。
+**v3 是完全本地版**：设备直接向公网**免费无 Key** 的 open-meteo 拉取天气；
+黄历优先走公网免费接口（农历/干支/宜忌），失败时由插件内置的
+1900–2100 农历算法**离线兜底**；壁纸在设备上用 KOReader 自带 Blitbuffer
+**本地合成**为 PNG 后写入屏保目录。
+**没有任何私人服务器、无需部署、无需 Key。**
 
-<p align="center">
+- 数据源全部公开：天气 [open-meteo.com](https://open-meteo.com)（CC BY 4.0）
+- 黄历：[api.mu-jie.cc](https://api.mu-jie.cc)（免费无 Key，结果缓存 24h，断网自动回落本地算法）
+- IP 定位 [ip-api.com](https://ip-api.com)（仅在「我的位置 → IP 自动定位」时调用一次）
+- 本地农历：公开 1900–2100 对照表 + 建除十二神推算（离线）
+
+<center>
   <img src="docs/sample_lunar.png" width="300" alt="黄历版"/>
   <img src="docs/sample_cover.png" width="300" alt="书籍封面版"/>
-</p>
+</center>
+
+> 上图为 `tools/preview.py` 按 `main.lua` 的渲染逻辑模拟出的灰度示意。
 
 ## 特性
 
-- 🖼 **e-ink 友好版式**：默认 1072×1448（Kindle Paperwhite 4，6″ 300ppi），灰阶几何图标 + 大字排版；分辨率可在渲染器里一行改
-- ☀️ **左大图标 + 右超大温度** + 宽松间距的"多云 24~31°"描述行
-- ⏱ **未来 12 小时预测条**（现在 + 每 3h ×5 点，时间 / 大图标 / 温度）
-- 📅 **黄历下半屏**：农历日期（楷体大字）+ 「宜 / 忌」窄徽章行
-- 📚 **书籍封面下半屏**：Kindle 端上传最近阅读的书封 → 云端取**最新天气**合成（POST 无缓存）
-- 🌐 **90+ 中英城市**内置坐标；也支持 `lat/lon` 直传任意地点；IP 自动定位（中文城市名）
-- 🌡 ℃ / ℉ 一键切换（服务端以华氏直接返回）
-- 🔁 每日自动更新（唤醒 / 休眠前 / 前台 30 分钟轮询三处补做）
-- 🛡 零图片解码 + 零 gettext 依赖（KOReader 插件安全路径）
-- 🔌 单插件文件结构、中文菜单、is_doc_only=false（主页/文件浏览器/阅读三上下文可见）
+- 🖼 **e-ink 友好版式**：默认 1072×1448（Kindle Paperwhite 4，6″ 300ppi 竖屏）；
+  分辨率在 `main.lua` 顶部 `W, H` 一行可改
+- ☀️ 左侧天气图标 + 右侧超大当前温度（出版字体探测：Bookerly / Caecilia / Georgia）+ 描述行
+- ⏱ **未来 12 小时预测条**（现在 + 每 3h ×5 点：时间 / 图标 / 温度）
+- 📅 **黄历下半屏**：农历日期大字（中文衬线字体探测）+ 「宜 / 忌」两块徽章；
+  宜/忌各取 3 条短句，同一项同列（自相矛盾）自动两侧删除；
+  建除十二神仅用作推算索引，不外露
+- 📚 **封面下半屏**：选最近阅读的书 → 本地提取书封 → 与天气本地合成一张壁纸
+- 🌐 **90+ 中英城市** + IP 自动定位；城市坐标由 open-meteo geocoding 解析并缓存
+- 🌡 ℃ / ℉ 一键切换
+- 🔁 每日自动更新（唤醒 / 休眠前 / 每 30 分钟轮询补做，默认早 6 点后）
+- 🛡 **零 gettext、零 ImageWidget**：文本经 `RenderText` 直接上 Blitbuffer；
+  书封与图标库均经 `ffi/pic` 解码为 BB 再合成，不会触发精简/定制版
+  KOReader（如 MiuRead）的图片渲染崩出
+- 🎨 **颜色自适应**：白/黑取值直接使用 KOReader 自带 `COLOR_WHITE/COLOR_BLACK`
+  常量原样传给绘制 API，兼容 8-bit 与 1-bit Blitbuffer 定制固件
+- 🔌 单插件目录结构、中文菜单、`is_doc_only=false`
+  （主页 / 文件浏览器 / 阅读三上下文均可见）
 
-## 架构
-
-```
-┌─ Kindle (KOReader) ──────────────────────────────┐      ┌─ 你的服务器 ────────────────────────┐
-│ Weatherdash.koplugin                             │ HTTP │ wallpaper_service (Python)          │
-│  菜单：                                          │  GET │  /wallpaper?theme=weather           │
-│   · 应用黄历天气壁纸  ──────────────────────────┼──►──│     &city=上海&unit=C              │
-│   · 应用书籍封面天气壁纸：                       │      │   ├ 查城市坐标表 / geocoding         │
-│      选最近读的书 → 提取封面（不解码）──POST────┼──►──│   ├ open-meteo 实时天气（无 Key）    │
-│   · 我的位置 / 温度单位 / 每日自动更新           │      │   ├ cnlunar 当日黄历                 │
-│                                                │      │   └ Pillow 渲染 PNG ──► 返回字节      │
-│  校验 PNG 魔数 → 写 screensaver/dashwallpaper.png│◄─────┼─────────────────────────────────────── │
-└──────────────────────────────────────────────────┘      └─────────────────────────────────────┘
-        ↑ 休眠时由 KOReader 帧缓冲显示（不经过图片解码，故安全）
-```
-
-两种"下半屏"由**请求方式**决定，互不覆盖、随时切换：
-
-| 动作 | 请求 | 下半屏 |
-|---|---|---|
-| 菜单「应用黄历天气壁纸」 | `GET` | 黄历（农历 + 宜/忌） |
-| 菜单「应用书籍封面天气壁纸」→ 点书 | `POST`（body = 封面 PNG/JPEG） | 书籍封面（每次向云端取最新天气再合成） |
-
-## 仓库结构
+## 设备端流程（无服务器）
 
 ```
-weatherdash/
-├── wallpaper_service/            # 云端渲染服务（可本地跑 / 可部署）
-│   ├── app.py                    # HTTP 服务：GET /wallpaper、POST 封面合成、/where
-│   ├── make_wallpaper.py         # 渲染器 + 命令行出图（--city 直接出预览）
-│   ├── weather.py                # WMO 天气码 → 中文描述 等
-│   ├── requirements.txt          # Pillow / requests / cnlunar
-│   └── fonts/                    # 见 README：放入 simhei.ttf / simkai.ttf（可选）
-├── koplugin/
-│   └── Weatherdash.koplugin/     # KOReader 端插件（main.lua + _meta.lua）
-├── docs/                         # 截图
-├── README.md
-└── LICENSE
+┌─ Kindle (KOReader) ───────────────────────────────────────────────┐
+│ Weatherdash.koplugin                                             │
+│  1) luasocket 直连 open-meteo（公网 https，免费无 Key）           │
+│     · geocoding: 城市名 → 经纬度（结果缓存到 settings）           │
+│     · forecast:  当前温度 / WMO 天气码 / 未来 12h / 日出日落      │
+│  2) 黄历：公网 api.mu-jie.cc 优先（农历+干支+宜忌，缓存 24h）     │
+│     · 失败回落：内置 1900–2100 农历表离线推算                     │
+│  3) Blitbuffer 本地绘制 1072×1448 灰度画布：                      │
+│     · 文字   → RenderText:renderUtf8Text（字体族按需探测）        │
+│     · 图标   → icons/<weather>_L.png 优先（ffi/pic 解码 → blitFrom） │
+│              兜底：内置 FontAwesome 字形 → 几何画法                  │
+│     · 书封   → ffi/pic 解码 → scale → blitFrom 合成（可选）       │
+│  4) bb:writeToFile → screensaver/dashwallpaper.png                │
+└───────────────────────────────────────────────────────────────────┘
+        ↑ 休眠时由 KOReader 屏保功能显示这张 PNG
 ```
 
-## 快速开始
+## 安装（Kindle / 任意 KOReader 设备）
 
-### 0) 准备字体（可选，推荐）
-
-中文字体有版权、不入库。若本机已装任意 CJK 字体（Windows / macOS 自带即满足）可跳过。
-Linux 服务器建议放开源或正版字体到 `wallpaper_service/fonts/`，详见 [`fonts/README.md`](wallpaper_service/fonts/README.md)。
-
-### 1) 本地起服务
-
-```bash
-cd wallpaper_service
-pip install -r requirements.txt
-python app.py --port 8000
-# 另开终端验证：
-curl "http://127.0.0.1:8000/wallpaper?theme=weather&city=上海&unit=C" -o lunar.png   # 黄历版
-curl -X POST --data-binary @cover.jpg -H "Content-Type: image/jpeg" \
-     "http://127.0.0.1:8000/wallpaper?theme=weather&city=上海" -o cover.png        # 封面版
-```
-
-> 不开服务也能直接出图（联网取真实数据，适合预览 / CI）：
-
-```bash
-python make_wallpaper.py --city 上海 --unit C --out preview.png      # 黄历版
-python make_wallpaper.py --city 上海 --cover cover.jpg --out c.png   # 封面版
-python make_wallpaper.py --lat 31.23 --lon 121.47 --no-lunar         # 任意坐标、纯天气
-```
-
-### 2) 部署到公网（可选，供 Kindle 远程使用）
-
-任意能跑 Python 的 PaaS（Render / Railway / Fly.io 等）或 VPS + nginx 反代均可：
-上传 `wallpaper_service/` 整目录，声明启动命令 `python app.py`、监听环境变量 `PORT`。
-成功后你会得到一个公网地址，例如 `https://your-host.example`。
-
-### 3) Kindle / KOReader 安装插件
-
-1. **改服务地址**：编辑 `koplugin/Weatherdash.koplugin/main.lua` 顶部常量：
-
-   ```lua
-   local SERVICE_BASE = "https://your-host.example/wallpaper?theme=weather"  -- ← 改成你的地址
-   ```
-
-2. 把 `Weatherdash.koplugin` 整个目录拷到 Kindle：
+1. 把 `koplugin/Weatherdash.koplugin/` **整个目录**拷到设备的插件目录：
 
    ```
    /mnt/us/koreader/plugins/Weatherdash.koplugin/
    ```
 
-3. **彻底重启** KOReader（不是插件管理页刷新）。
-4. 主页菜单 → **更多工具 → 天气壁纸**，点「应用黄历天气壁纸」；
-   让 Kindle 休眠即可看到壁纸。
-5. 若屏保不显示：KOReader → 设置 → 屏保 → 来源选"图片"，目录指向写入路径
-   （默认 `koreader/screensaver/`，文件名 `dashwallpaper.png`）。
+2. **彻底重启** KOReader（不是插件管理页刷新，长按电源→重启最稳）。
 
-> ⚠️ **MiuRead 等定制版 KOReader 用户必读**：本插件类已带 `is_doc_only = false`，
-> 若从插件管理页可见但菜单找不到入口，请确认插件已勾选 ☑ 且**完全重启**了 KOReader。
+3. 主页菜单 → **更多工具 → 天气壁纸**，点 **「应用黄历天气壁纸」**。
 
-## API
+4. 让 Kindle 休眠即可看到壁纸。
 
-基地址：`/wallpaper`（或便捷路径 `/weather`）
+> **首次使用需联网**一次（拉天气 + 城市坐标解析）；黄历断网也能离线推算。
+> 若屏保不显示：KOReader → 设置 → 屏保 → 来源选「图片」，
+> 目录指向写入路径（默认 `koreader/screensaver/`，文件名 `dashwallpaper.png`）。
 
-| 方法 | 路径/参数 | 说明 |
-|---|---|---|
-| GET | `/wallpaper?theme=weather&city=上海&unit=C` | 黄历天气壁纸 PNG（默认主题，theme 可省略） |
-| GET | `/weather?lat=31.23&lon=121.47&unit=F` | 便捷路径；lat/lon 优先于 city |
-| POST | `/wallpaper?theme=weather&city=上海`（body=封面图字节） | 天气+书封合成 PNG（**每次重新拉最新天气，无缓存**） |
-| GET | `/where?city=上海&unit=C` | 该城市天气 JSON（调试用） |
-| GET | `/` | 服务说明 |
+> ⚠️ **MiuRead 等定制版 KOReader**：插件类已带 `is_doc_only = false`。
+> 若插件管理页可见但菜单无入口，请确认已 ☑ 勾选并**完全重启**。
 
-参数：
+## 菜单说明
 
-| 参数 | 说明 | 默认 |
-|---|---|---|
-| `city` | 中文/英文城市名（内置 90+ 坐标，未知城市自动 geocoding） | 上海 |
-| `lat` / `lon` | 直接指定坐标（优先于 city） | — |
-| `unit` | `C` / `F` | `C` |
-| `theme` | 目前仅 `weather`；`THEMES` 扩展点见下 | `weather` |
+| 菜单 | 作用 |
+|---|---|
+| 应用黄历天气壁纸 | 拉天气 + 本地绘黄历壁纸（下半屏=黄历） |
+| 应用书籍封面天气壁纸 | 选最近阅读的书 → 本地提取书封 + 天气合成（下半屏=封面） |
+| 我的位置 | IP 自动定位 / 90+ 城市 / 恢复默认上海 |
+| 温度单位 | ℃ / ℉ |
+| 每日自动更新 | 开 / 关、时间、上次状态、立即更新一次 |
+| 使用说明 | 内置说明 |
+
+## 仓库结构
+
+```
+weatherdash-koreader/
+├── koplugin/
+│   └── Weatherdash.koplugin/     # KOReader 插件
+│       ├── main.lua              #   渲染主逻辑（luaparse 校验通过）
+│       ├── _meta.lua             #   元数据（version = 3.3.9）
+│       ├── fonts/
+│       │   └── fa-weather.ttf    #   FontAwesome 6 Free Solid 子集（4.7KB，仅字形）
+│       └── icons/                #   天气图标库 PNG（与 loeffner/WeatherLockscreen 同款思路）
+│           ├── sun_L.png  / sun_S.png          (260×260 / 92×92)
+│           ├── partly_L.png / partly_S.png
+│           ├── cloud_L.png / cloud_S.png
+│           ├── fog_L.png   / fog_S.png
+│           ├── drizzle_L.png / drizzle_S.png   # 小雨：几何画法（云+小圆点）
+│           ├── rain_L.png  / rain_S.png        # 中雨：fa-cloud-rain
+│           ├── heavy_L.png / heavy_S.png       # 大雨：fa-cloud-showers-heavy
+│           ├── snow_L.png  / snow_S.png
+│           └── thunder_L.png / thunder_S.png
+├── tools/
+│   ├── verify_lunar.py           # 农历算法回归测试（13 个锚点，纯 Python）
+│   ├── verify_lunar_lua.js       # 从 main.lua 提取数据表，按 Lua 1-based 语义复算同批锚点
+│   ├── subset_fa.py              # FontAwesome 6 裁剪到 fonts/fa-weather.ttf
+│   ├── build_icons.py            # 生成 icons/*.png（drizzle 为几何画法，其余取自子集字体）
+│   └── preview.py                # 按 main.lua 渲染逻辑出灰度示意 PNG（docs/）
+├── docs/                         # 预览图
+├── README.md
+└── LICENSE
+```
+
+> 想换图标风格？把 `icons/<weather>_L.png` 与 `<weather>_S.png` 用你喜欢的同尺寸文件覆盖即可，
+> 插件无须改动。建议图标留白与默认接近（PNG 白底黑字形）。
 
 ## 自定义
 
-- **分辨率**：`make_wallpaper.py` 顶部 `TARGET_W / TARGET_H`。
-- **字型**：天气壁纸默认楷体（`kai=True`），找不到回退黑体。改 `_load_font(size, kai=...)`。
-- **城市表**：`app.py` 的 `_CITY_RAW` 追加 `("城市名","English",lat,lon)` 即可；不追加也能靠 geocoding。
-- **扩展列表式主题**：`app.py` 顶部 `THEMES` 注释里有完整模板（加一个"看板"类主题只需填
-  `title/sections_url/bundled/fallback`，渲染自动走 `render_sections`）。
-- **每日自动更新时段**：插件 `main.lua` 里 `AUTO_HOURS`。
+- **分辨率**：`koplugin/Weatherdash.koplugin/main.lua` 顶部 `local W, H = 1072, 1448`
+  —— 改成你的设备像素即可（横屏设备可对调，布局按比例缩放）。
+- **图标**：替换 `icons/<weather>_L.png` 和 `<weather>_S.png`（命名固定）。
+- **字体**：温度大字按 `pub` 字体族探测（Bookerly → Caecilia → AmazonEmber →
+  Georgia，均未命中回落 NotoSans）；黄历日期按 `serif` 字体族探测 CJK 衬线
+  （NotoSerifCJKsc → DroidSerifFallback → NotoSerifSC → SourceHanSerifSC）。
+- **城市列表**：`CITY_CHOICES`（想要更多城市直接加中文名，坐标自动 geocoding）。
+- **自动更新时间窗**：`AUTO_HOURS`。
+- **屏保目录**：`findScreensaverDir()` 依次探测并回退创建。
 
 ## 常见问题
 
 | 现象 | 处理 |
 |---|---|
-| 壁纸出方块/空白 | 服务端缺 CJK 字体 → 看 `fonts/README.md` |
-| 下载提示"云端未生成" | 先 curl 你的服务地址确认返回 PNG；检查 city 参数编码 |
-| 封面模式报"未能提取封面" | 该书无内嵌封面缓存；改用「应用黄历天气壁纸」 |
-| 插件可见但菜单无入口 | 确认 ☑ 勾选 + 完全重启；检查是否 MiuRead 版需要 `is_doc_only=false`（本插件已内置） |
-| 想用官方原版 KOReader | 本插件基于官方插件 API，通用 KOReader 亦可使用（仅封面提取用到 bookinfo API，适配多级回退） |
+| 壁纸文字为方块/空白 | 取不到 CJK 字体：确认设备字体已安装且 `face()` 回退链正常 |
+| 提示"天气服务返回 HTTP…" | 确认已联网；open-meteo 对海外/部分网络偶发超时，稍后重试 |
+| 封面模式提示"未能提取封面" | 该书无内嵌封面或无可缓存封面文件；可换一本，或改用黄历版 |
+| 黄历日期不对 | 先跑 `python tools/verify_lunar.py` 自查；若设备系统时间异常也会影响 |
+| 宜/忌出现同一项 | v3.3.8 起渲染前自动去冲突（两侧都删）并各只显示 3 条 |
+| "明明没下雨却显示大雨" | v3.3.9 起雨势分三级：毛毛雨/小雨=云+小点（drizzle）、中雨=雨丝（rain）、大雨/强阵雨=粗长雨丝（heavy）。另注意 open-meteo 的 current 与 hourly 是同一模型但可能不一致（如当前晴间多云、模型认为白天有毛毛雨），时序条按逐小时模型数据如实显示 |
+| 生成壁纸时崩出 / 壁纸异常 | 看屏保目录里的 `weatherdash_trace.log`（每次生成重写），最后一行即停止位置；把内容发 issue |
+| 壁纸整片黑/白底反色 | v3.3.6 起颜色直接取设备 `COLOR_*` 常量适配 1-bit/8-bit BB，请升级后重试 |
+| 插件可见但菜单无入口 | 确认 ☑ 勾选 + 完全重启；`is_doc_only=false` 已内置 |
+| 想同时保留官方屏保图 | 屏保目录放多张图 + KOReader 随机模式即可，本插件只认 `dashwallpaper.png` |
+
+## 开发 / 回归
+
+```bash
+# 农历算法回归（13 个锚点：含闰二月、闰四月、春节跨年等）
+python tools/verify_lunar.py
+
+# 用 Node 按 Lua 1-based 语义复算同批锚点（抓跨语言索引陷阱）
+node tools/verify_lunar_lua.js
+
+# 重新生成 FA 字形子集字体（需要先下载 fa-solid-900.ttf 放到 tools/）
+python tools/subset_fa.py
+
+# 由子集字体生成图标库 PNG
+python tools/build_icons.py
+
+# 预览图（需 Pillow；Windows/macOS 自带中文字体即可）
+pip install Pillow
+python tools/preview.py
+```
 
 ## 数据源与致谢
 
-- 天气：[open-meteo.com](https://open-meteo.com)（CC BY 4.0，免费无 Key）
-- IP 定位：[ip-api.com](https://ip-api.com)（免费非商用；本服务仅在 `我的位置→IP 自动定位` 时调用）
-- 黄历：[cnlunar](https://pypi.org/project/cnlunar/)（MIT）
-- 插件机制与屏保：KOReader 官方 `coverimage.koplugin` 的思路（封面编码走 Blitbuffer 安全路径）
+- 天气 / 地理编码：[open-meteo.com](https://open-meteo.com)（CC BY 4.0，免费无 Key）
+- 黄历：[api.mu-jie.cc](https://api.mu-jie.cc)（免费无 Key）
+- IP 定位：[ip-api.com](https://ip-api.com)（免费非商用，仅 IP 自动定位时调用）
+- 农历：公开的 1900–2100 农历对照表（201 项）与建除十二神推宜忌（传统简化版，仅供参阅）
+- 图标：默认采用 [Font Awesome Free](https://fontawesome.com)（SIL OFL 1.1）的子集
+  渲染为图标库 PNG，可被你的同尺寸图标替换
+- 渲染：KOReader `ffi/blitbuffer`、`ui/rendertext`、`ui/font`、`ffi/pic` 官方 API
 
 ## License
 
-[MIT](LICENSE)。注意：仓库**不包含**中文字体文件，请自行准备可合法分发的字体。
+[MIT](LICENSE)。仓库不包含任何中文字体文件；如需预览，`tools/preview.py`
+会尝试使用你系统里已有的 CJK 字体。

@@ -1,26 +1,18 @@
-# ---- Python ----
+# ---- Python（tools/ 回归测试 / 预览）----
 __pycache__/
 *.py[cod]
-*.egg-info/
 .venv/
 venv/
 
-# ---- 运行时产物 ----
-wallpaper_service/cache/
-*.log
-
-# ---- 字体（版权原因不入库，自行放入 wallpaper_service/fonts/）----
-wallpaper_service/fonts/*.ttf
-wallpaper_service/fonts/*.ttc
-wallpaper_service/fonts/*.otf
-!wallpaper_service/fonts/README.md
-!wallpaper_service/fonts/.gitkeep
-
-# ---- 生成的图片 ----
-weather_wallpaper.png
+# ---- 生成的图片 / 打包产物 ----
 *.png.tmp
 out/
+dist/
 sample_*.png
+!docs/sample_*.png
+
+# ---- 运行期诊断日志（设备上生成）----
+*.log
 
 # ---- 编辑器 / 系统 ----
 .idea/

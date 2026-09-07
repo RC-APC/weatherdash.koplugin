@@ -62,6 +62,13 @@ local RenderText = require("ui/rendertext")
 local Font = require("ui/font")
 local bit = require("bit")
 
+-- 屏保子目录：天气壁纸写 screensaver/weatherdash/，
+-- 「看板壁纸」（DashWallpaper 插件）写 screensaver/dashwallpaper/。
+-- 两个插件各写各的文件夹互不覆盖；屏保指向哪一个由菜单「屏保指向」切换。
+local WD_SUBDIR  = "weatherdash"
+local DW_SUBDIR  = "dashwallpaper"
+local WD_OUTNAME = "weatherdash.png"
+
 -- JSON 解码：KOReader 不同版本/分支暴露的模块名不同，依次尝试 common 的几种。
 -- 返回带 .decode 的模块（json/dkjson/cjson 都提供 .decode），失败返回 nil。
 local _json_mod
@@ -1265,13 +1272,72 @@ function Weatherdash:findScreensaverDir()
     return c
 end
 
+-- 确保屏保根目录下自己的子目录存在且可写；建不出来就回落根目录（保证还能出图）
+function Weatherdash:ensureSubDir(name)
+    local root = self:findScreensaverDir()
+    local sub = root .. "/" .. name
+    pcall(function() os.execute('mkdir -p "' .. sub .. '" >/dev/null 2>&1') end)
+    local ok, f = pcall(function() return io.open(sub .. "/.wd_probe", "w") end)
+    if ok and f then
+        pcall(function() f:close() end)
+        pcall(function() os.remove(sub .. "/.wd_probe") end)
+        return sub
+    end
+    return root
+end
+
+-- 取 KOReader 全局设置对象（G_reader_settings）：不同版本可能没挂全局，兜底自己打开
+local function _grs()
+    if type(G_reader_settings) == "table" and G_reader_settings.readSetting then
+        return G_reader_settings
+    end
+    local dir
+    local ok, d = pcall(function() return DataStorage:getSettingsDir() end)
+    if ok and d then dir = d else dir = DataStorage:getDataDir() end
+    return require("luasettings"):open(dir .. "/settings.reader.lua")
+end
+
+-- 当前屏保目录指向（字符串；未设置返回 nil）
+local function _currentScreensaverDir()
+    local v
+    pcall(function() v = _grs():readSetting("screensaver_dir") end)
+    return v
+end
+
+-- 把 KOReader 屏保目录指向某个子目录（weatherdash / dashwallpaper）
+-- 同时处理前缀键：若用户单独设过「待机/关机」屏保目录（优先级高于通用键），一并向新目录改。
+local function _setScreensaverDir(dir)
+    return pcall(function()
+        local G = _grs()
+        G:saveSetting("screensaver_dir", dir)
+        for _, p in ipairs({ "sleep_", "exit_" }) do
+            if G:readSetting(p .. "screensaver_dir") ~= nil then
+                G:saveSetting(p .. "screensaver_dir", dir)
+            end
+        end
+        G:flush()
+    end)
+end
+
+function Weatherdash:currentScreensaverTarget()
+    return _currentScreensaverDir()
+end
+
+function Weatherdash:setScreensaverTarget(sub)
+    local dir = self:ensureSubDir(sub)
+    local ok = _setScreensaverDir(dir)
+    return ok, dir
+end
+
 function Weatherdash:saveBB(bb)
     trace("saveBB: find screensaver dir")
-    local dir = self:findScreensaverDir()
-    local out = dir .. "/dashwallpaper.png"
+    local dir = self:ensureSubDir(WD_SUBDIR)
+    local out = dir .. "/" .. WD_OUTNAME
     trace("saveBB: writeToFile " .. tostring(out))
     local ok = pcall(function() return bb:writeToFile(out, "png") end)
     if not ok then trace("FAIL writeToFile"); return false, "写 PNG 失败" end
+    -- 写成功即把屏保指向自己的文件夹（应用哪个插件，屏保就显示哪个）
+    pcall(function() _setScreensaverDir(dir) end)
     trace("saveBB ok")
     return true, out
 end
@@ -1651,6 +1717,46 @@ function Weatherdash:buildSubmenu()
     ut[#ut + 1] = { text = "立即更新一次", callback = function() self:updateUsingLastMode(true) end }
     t[#t + 1] = { text_func = function() return "每日自动更新：" .. (self.auto_enabled and "开" or "关") end, sub_item_table = ut }
 
+    -- 组：屏保指向——两个插件各写各的文件夹，这里选屏保显示哪一个
+    local st = {}
+    st[#st + 1] = {
+        text_func = function() return "天气壁纸（screensaver/" .. WD_SUBDIR .. "）" end,
+        checked_func = function()
+            local cur = _currentScreensaverDir() or ""
+            return cur:find(WD_SUBDIR, 1, true) ~= nil
+        end,
+        callback = function()
+            local ok, dir = self:setScreensaverTarget(WD_SUBDIR)
+            UIManager:show(InfoMessage:new{ text = ok
+                and ("屏保已指向天气壁纸：\n" .. dir .. "\n休眠即可看到。")
+                or "切换失败，请到 KOReader 设置里手动选择屏保目录。" })
+        end,
+    }
+    st[#st + 1] = {
+        text_func = function() return "看板壁纸（screensaver/" .. DW_SUBDIR .. "）" end,
+        checked_func = function()
+            local cur = _currentScreensaverDir() or ""
+            return cur:find(DW_SUBDIR, 1, true) ~= nil
+        end,
+        callback = function()
+            local ok, dir = self:setScreensaverTarget(DW_SUBDIR)
+            UIManager:show(InfoMessage:new{ text = ok
+                and ("屏保已指向看板壁纸：\n" .. dir .. "\n（需先在「看板壁纸」插件里应用过一次）")
+                or "切换失败，请到 KOReader 设置里手动选择屏保目录。" })
+        end,
+    }
+    t[#t + 1] = {
+        text_func = function()
+            local cur = _currentScreensaverDir() or ""
+            local name
+            if cur:find(WD_SUBDIR, 1, true) then name = "天气壁纸"
+            elseif cur:find(DW_SUBDIR, 1, true) then name = "看板壁纸"
+            else name = "未设置" end
+            return "屏保指向：" .. name
+        end,
+        sub_item_table = st,
+    }
+
     t[#t + 1] = { text = "使用说明", callback = function()
         UIManager:show(InfoMessage:new{ text =
             "· 点「应用黄历天气壁纸」立即联网拉取天气，在设备本地\n"
@@ -1666,11 +1772,12 @@ function Weatherdash:buildSubmenu()
             .. "· 每次锁屏（休眠）会按「上次选择的模式」刷新一次：\n"
             .. "  手动点过「黄历」或某本「封面」后，之后每次锁屏都沿用该模式\n"
             .. "  （封面模式会重新提取上次那本书的封面）。\n\n"
+            .. "· 「屏保指向」：天气壁纸写在 screensaver/weatherdash/，\n"
+            .. "  「看板壁纸」写在 screensaver/dashwallpaper/，两插件互不覆盖；\n"
+            .. "  在这里选屏保显示哪一个（应用哪个插件就自动指向哪个）。\n\n"
             .. "数据来源：open-meteo（天气 / 地理编码，CC BY 4.0）+ 内置农历算法。\n"
             .. "本插件只写 PNG 不解码图片，故不会像图片模式那样崩出。\n\n"
-            .. "小贴士：与「看板壁纸」（DashWallpaper）共享屏保文件\n"
-            .. "dashwallpaper.png，两个插件可自由切换。\n"
-            .. "若屏保不显示，请在 KOReader 设置里把屏保目录指向写入路径。" })
+            .. "若屏保不显示，请确认「屏保指向」选的是你想要的那个文件夹。" })
     end }
     return t
 end

@@ -321,7 +321,7 @@ local function getLunarInfoLocal(t)
     local jc = (dz - monthZhi) % 12
     if jc < 0 then jc = jc + 12 end
     -- 宜/忌整理：① 同一项同时出现在宜与忌（数据自相矛盾，如"宜出行+忌出行"）
-    --   → 两侧都删，宁缺毋滥；② 各只保留前 3 项（版面短句，避免拥挤）。
+    --   → 两侧都删，宁缺毋滥；② 各只保留前 4 项（2×2 网格正好填满）。
     local yt, jt = {}, {}
     for w in JIANCHU_YI[jc + 1]:gmatch("%S+") do yt[#yt + 1] = w end
     for w in JIANCHU_JI[jc + 1]:gmatch("%S+") do jt[#jt + 1] = w end
@@ -333,10 +333,10 @@ local function getLunarInfoLocal(t)
     end
     local y3, j3 = {}, {}
     for _, y in ipairs(yt) do
-        if not drop[y] and #y3 < 3 then y3[#y3 + 1] = y end
+        if not drop[y] and #y3 < 4 then y3[#y3 + 1] = y end
     end
     for _, j in ipairs(jt) do
-        if not drop[j] and #j3 < 3 then j3[#j3 + 1] = j end
+        if not drop[j] and #j3 < 4 then j3[#j3 + 1] = j end
     end
     if trace then
         trace("lunar local: gz=" .. gz .. " dz=" .. dz .. " monthZhi=" .. monthZhi
@@ -939,34 +939,47 @@ local function drawIconGeo(bb, cx, cy, r, itype)
     end
 end
 
+-- 宜/忌 框 v3：加高黑底白字居中表头（白字显示全）+ 下方 2×2 网格明细 + 细边框
+-- 数据：body 是空格分隔的条目（≤4），超过 4 个截断；少于 4 个按行主序填空格。
 local function drawBadge(bb, x, y, w, h, title, body)
+    -- 拆分条目（最多 4 个，2×2 网格）
+    local items = {}
+    for wpart in body:gmatch("[^%s]+") do
+        items[#items + 1] = wpart
+        if #items >= 4 then break end
+    end
+    local header_h = 81      -- 黑底白字表头高度（v3.3.14：再+17px ≈ 半个表头字，kindle 上白字才顶格）
+    local frame_w  = 3       -- 细边框厚度
+    local body_y   = y + header_h
+    local body_h   = h - header_h
+
+    -- 1) 整框先填白（防止残留黑）
     rect(bb, x, y, w, h, C_WHITE)
-    rect(bb, x, y, w, 5, C_BLACK)
-    rect(bb, x, y + h - 5, w, 5, C_BLACK)
-    rect(bb, x, y, 5, h, C_BLACK)
-    rect(bb, x + w - 5, y, 5, h, C_BLACK)
-    -- 内边距加大：标题离顶边框、正文离标题/底边框都要有呼吸感（v3.3.6 排版）。
-    local pad = 30
-    drawText(bb, x + pad, y + 40, title, 30, true)
-    local body_size = 26
-    local maxw = w - 2 * pad
-    local words = {}
-    for wpart in body:gmatch("[^%s]+") do words[#words + 1] = wpart end
-    local line1, line2, cur = "", "", ""
-    for _, wp in ipairs(words) do
-        if textWidth(body_size, cur .. wp, false) > maxw and cur ~= "" then
-            line1 = cur; cur = wp
-        else
-            cur = (cur == "" and wp or cur .. " " .. wp)
-        end
+
+    -- 2) 黑底表头
+    rect(bb, x, y, w, header_h, C_BLACK)
+
+    -- 3) 表头白字居中（字号 34，baseline 取表头中线偏下，视觉居中）
+    -- 表头白字：baseline 取 header_h/2 + 字高一半（≈34*0.35），框内垂直居中（v3.3.15 微上提）
+    drawTextCenter(bb, x + w / 2, y + header_h * 0.5 + 12, title, 34, true, C_WHITE, nil)
+
+    -- 4) 2×2 网格明细（最多 4 项）
+    local cell_w = w / 2
+    local cell_h = body_h / 2
+    for i = 1, #items do
+        local col = (i - 1) % 2
+        local row = math.floor((i - 1) / 2)
+        local cx = x + col * cell_w + cell_w / 2
+        local cy = body_y + row * cell_h + cell_h / 2
+        -- baseline 下移约 size*0.35 让文字视觉居中
+        drawTextCenter(bb, cx, cy + 10, items[i], 28, false, C_BLACK, nil)
     end
-    if line1 == "" then
-        drawText(bb, x + pad, y + 112, cur, body_size, false)
-    else
-        line2 = cur
-        drawText(bb, x + pad, y + 112, line1, body_size, false)
-        drawText(bb, x + pad, y + 150, line2, body_size, false)
-    end
+
+    -- 5) 细边框（四边）
+    rect(bb, x, y, w, frame_w, C_BLACK)                              -- 顶
+    rect(bb, x, y + h - frame_w, w, frame_w, C_BLACK)                -- 底
+    rect(bb, x, y, frame_w, h, C_BLACK)                              -- 左
+    rect(bb, x + w - frame_w, y, frame_w, h, C_BLACK)                -- 右
 end
 
 -- [诊断 v3.2.1] trace 定义见上方 _pluginDir 之后。
@@ -1039,8 +1052,12 @@ function Weatherdash:renderWallpaper(wx, lunar, cover_bb)
         local dy = lowerY + math.floor((boxh - dh) / 2)
         pcall(function() bb:blitFrom(draw_bb, dx, dy, 0, 0, dw, dh) end)
         if freed then pcall(function() draw_bb:free() end) end
-        rect(bb, mx, lowerY, boxw, 4, C_BLACK)
-        rect(bb, mx, lowerY + boxh - 4, boxw, 4, C_BLACK)
+        -- 边框贴着封面图本身一圈（不框整个白盒）
+        local cfw = 3
+        rect(bb, dx, dy, dw, cfw, C_BLACK)                          -- 顶
+        rect(bb, dx, dy + dh - cfw, dw, cfw, C_BLACK)                -- 底
+        rect(bb, dx, dy, cfw, dh, C_BLACK)                           -- 左
+        rect(bb, dx + dw - cfw, dy, cfw, dh, C_BLACK)                -- 右
     else
         -- 黄历版：上排农历日期，下排「宜 / 忌」两块卡片。
         -- 建除十二神不再单独标出（仅作为推算宜忌表的内部索引），
@@ -1049,8 +1066,8 @@ function Weatherdash:renderWallpaper(wx, lunar, cover_bb)
         drawTextCenter(bb, W / 2, lowerY, lunar.text, 38, true, C_BLACK, "serif")
         local bw = (W - 3 * mx) / 2
         local by = lowerY + 92   -- 与上方农历日期留出呼吸（原来 58 太贴）
-        drawBadge(bb, mx, by, bw, 190, "宜", lunar.yi)
-        drawBadge(bb, mx * 2 + bw, by, bw, 190, "忌", lunar.ji)
+        drawBadge(bb, mx, by, bw, 257, "宜", lunar.yi)
+        drawBadge(bb, mx * 2 + bw, by, bw, 257, "忌", lunar.ji)
     end
     trace("lower half ok (" .. (cover_bb and "cover" or "lunar") .. ")")
 

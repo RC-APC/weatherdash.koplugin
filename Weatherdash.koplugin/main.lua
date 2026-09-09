@@ -1041,6 +1041,7 @@ function Weatherdash:renderWallpaper(wx, lunar, cover_bb)
     trace("forecast strip ok (#" .. #fc .. ")")
 
     local lowerY = 880
+    local coverBarY = nil  -- 封面模式阅读进度条顶部 y（nil=本次未画）
     if cover_bb then
         -- 先把封面区填白（即使缩放后两侧留白也是白底，不会透出 blitbuffer 初始黑）
         local boxw, boxh = W - 2 * mx, 420  -- 缩短 40（原本 460），给下方"日出/日落"让出一行
@@ -1065,6 +1066,29 @@ function Weatherdash:renderWallpaper(wx, lunar, cover_bb)
         rect(bb, dx, dy + dh - cfw, dw, cfw, C_BLACK)                -- 底
         rect(bb, dx, dy, cfw, dh, C_BLACK)                           -- 左
         rect(bb, dx + dw - cfw, dy, cfw, dh, C_BLACK)                -- 右
+        -- 阅读进度条（v3.3.17 自安卓端 v2.9.x 搬运）：封面盒正下方、与封面图
+        -- 同宽（左右边缘与封面对齐），细黑外框 + 实心黑填充 + 右侧百分比；
+        -- 整体上移半字（+13 而非 +26）。拿不到进度（-1）则不画。
+        local prog = self:readingProgressFor(self.last_cover_file)
+        if prog >= 0 then
+            local bar_h, bfw = 30, 3
+            local by2 = lowerY + boxh + 13
+            coverBarY = by2
+            rect(bb, dx, by2, dw, bfw, C_BLACK)                          -- 外框·顶
+            rect(bb, dx, by2 + bar_h - bfw, dw, bfw, C_BLACK)            -- 外框·底
+            rect(bb, dx, by2, bfw, bar_h, C_BLACK)                       -- 外框·左
+            rect(bb, dx + dw - bfw, by2, bfw, bar_h, C_BLACK)            -- 外框·右
+            local fillw = math.floor((dw - 2 * bfw) * prog / 100 + 0.5)
+            if fillw > 0 then
+                rect(bb, dx + bfw, by2 + bfw, fillw, bar_h - 2 * bfw, C_BLACK)
+            end
+            local ps = tostring(prog) .. "%"
+            local pw = textWidth(26, ps, true, "pub")
+            local px = dx + dw + 18
+            if px + pw > W - 10 then px = W - 10 - pw end                -- 极宽封面防溢出
+            -- drawText 的 y 是字面顶部：baseline 目标 by2+bar_h/2+9 → y = 目标-0.82*26
+            drawText(bb, px, by2 + bar_h / 2 + 9 - math.floor(26 * 0.82), ps, 26, true, C_BLACK, "pub")
+        end
     else
         -- 黄历版：上排农历日期，下排「宜 / 忌」两块卡片。
         -- 建除十二神不再单独标出（仅作为推算宜忌表的内部索引），
@@ -1085,9 +1109,13 @@ function Weatherdash:renderWallpaper(wx, lunar, cover_bb)
     --   · 封面版：放在封面盒正下方（封面盒已缩短到 420 高，不再压住书封）。
     if sr ~= "" or ss ~= "" then
         if cover_bb then
-            drawTextCenter(bb, W / 2, lowerY + 420 + 18,
-                (sr ~= "" and ("日出 " .. sr) or "") .. "   " .. (ss ~= "" and ("日落 " .. ss) or ""),
-                20, false, C_DIM)
+            if not coverBarY then
+                -- 封面盒下方空间已让给阅读进度条（与安卓端封面版一致，
+                -- 日出/日落信息在黄历模式仍显示），再画会压条/压页脚。
+                drawTextCenter(bb, W / 2, lowerY + 420 + 18,
+                    (sr ~= "" and ("日出 " .. sr) or "") .. "   " .. (ss ~= "" and ("日落 " .. ss) or ""),
+                    20, false, C_DIM)
+            end
         else
             drawTextCenter(bb, W / 2, H - 132,
                 (sr ~= "" and ("日出 " .. sr) or "") .. "   " .. (ss ~= "" and ("日落 " .. ss) or ""),
@@ -1159,6 +1187,84 @@ function Weatherdash:readerUI()
     local ok_i, inst = pcall(function() return UI.instance end)
     if not ok_i or not inst then return nil end
     return inst
+end
+
+-- 阅读进度（v3.3.18 修复：v3.3.17 在真机读不到进度 → 进度条不画）：
+--   ★ 根因：KOReader 的 ReadHistory 条目（buildEntry）只存 time/file/text/dim/
+--     mandatory/select_enabled，**根本没有 percent 字段**（_flush 也只写 time/file），
+--     所以读 e.percent 永远拿不到 → 返回 -1。安卓端是从微信读书 WRReader 的
+--     ShelfItem.readProgress 取，插件端不可用同一来源。
+--   ★ 正确来源：
+--     1) 书正在打开（ui.document.file == file）→ 实时进度：优先当前页/总页数
+--        （ui.view.state.page + ui.document:getPageCount()，锁屏时最新鲜）；
+--        兜底 percent_finished（0~1）。
+--     2) 书已关闭 → 读它的 DocSettings 侧车文件（.sdr/...lua）：
+--        DocSettings:open(file):readSetting("percent_finished")（0~1）。
+--   全部拿不到返回 -1（不画进度条）。所有访问包 pcall，结构差异不致命。
+function Weatherdash:readingProgressFor(file)
+    if not file or file == "" then
+        trace("readingProgressFor: 空文件")
+        return -1
+    end
+    local ui = self:readerUI()
+    if ui then
+        local cur = nil
+        pcall(function() cur = ui.document and ui.document.file end)
+        if cur == file then
+            trace("readingProgressFor: 当前打开的书 → 取实时进度")
+            -- (1) 当前页 / 总页数（最可靠，随翻页即时更新）
+            local okp, pages = pcall(function() return ui.document:getPageCount() end)
+            local okc, page = pcall(function() return ui.view.state.page end)
+            if okp and type(pages) == "number" and pages > 0
+                    and okc and type(page) == "number" and page >= 1 then
+                local pct = (pages <= 1) and 100 or math.floor(100 * (page - 1) / (pages - 1) + 0.5)
+                if pct < 0 then pct = 0 end
+                if pct > 100 then pct = 100 end
+                trace("readingProgressFor: 页式 " .. tostring(pct) .. "% (page=" .. page .. "/" .. pages .. ")")
+                return pct
+            end
+            -- (2) 兜底 percent_finished（0~1，关书时写入，可能略旧）
+            local okf, pf = pcall(function()
+                return ui.doc_settings and ui.doc_settings:readSetting("percent_finished")
+            end)
+            if okf and type(pf) == "number" and pf >= 0 then
+                local pct = math.floor(pf * 100 + 0.5)
+                if pct < 0 then pct = 0 end
+                if pct > 100 then pct = 100 end
+                trace("readingProgressFor: percent_finished " .. tostring(pct) .. "%")
+                return pct
+            end
+        end
+    end
+    -- (3) 关闭的书：读其 DocSettings 侧车（percent_finished，0~1）
+    local okd, DocSettings = pcall(function() return require("docsettings") end)
+    if okd and DocSettings then
+        local oko, d = pcall(function() return DocSettings:open(file) end)
+        if oko and d then
+            local pf = nil
+            pcall(function() pf = d:readSetting("percent_finished") end)
+            if type(pf) == "number" and pf > 0 then
+                local pct = math.floor(pf * 100 + 0.5)
+                if pct < 0 then pct = 0 end
+                if pct > 100 then pct = 100 end
+                trace("readingProgressFor: 侧车 percent_finished " .. tostring(pct) .. "%")
+                return pct
+            end
+            -- (4) 极旧版本：doc_page/doc_pages
+            local pg, pgs = nil, nil
+            pcall(function() pg = d:readSetting("doc_page") end)
+            pcall(function() pgs = d:readSetting("doc_pages") end)
+            if type(pg) == "number" and pg >= 1 and type(pgs) == "number" and pgs > 0 then
+                local pct = math.floor(100 * (pg - 1) / (pgs - 1) + 0.5)
+                if pct < 0 then pct = 0 end
+                if pct > 100 then pct = 100 end
+                trace("readingProgressFor: 侧车 doc_page " .. tostring(pct) .. "%")
+                return pct
+            end
+        end
+    end
+    trace("readingProgressFor: 全部失败 → -1（不画进度条）")
+    return -1
 end
 
 -- 把图片文件（png/jpg/webp/gif）解码为 Blitbuffer（强制灰度 BB8，匹配画布类型）。
@@ -1711,9 +1817,14 @@ function Weatherdash:buildSubmenu()
     ut[#ut + 1] = { text_func = function() return "上次更新：" .. (self.last_auto_status ~= "" and self.last_auto_status or "尚未执行") end,
         callback = function() UIManager:show(InfoMessage:new{ text = "上次自动更新：" .. (self.last_auto_status ~= "" and self.last_auto_status or "尚未执行") .. "\n今天：" .. os.date("%Y-%m-%d %H:%M") }) end }
     ut[#ut + 1] = { text_func = function()
-        return "锁屏刷新模式：" .. (self.last_mode == "cover"
-            and ("书籍封面（" .. (self.last_cover_name ~= "" and self.last_cover_name or "上次所选") .. "）")
-            or "黄历（上次所选）") end, enabled = false }
+        if self.last_mode == "cover" then
+            local nm = (self.last_cover_name ~= "" and self.last_cover_name or "上次所选")
+            local pg = self:readingProgressFor(self.last_cover_file)
+            if pg >= 0 then nm = nm .. " · " .. pg .. "%" end
+            return "锁屏刷新模式：书籍封面（" .. nm .. "）"
+        end
+        return "锁屏刷新模式：黄历（上次所选）"
+    end, enabled = false }
     ut[#ut + 1] = { text = "立即更新一次", callback = function() self:updateUsingLastMode(true) end }
     t[#t + 1] = { text_func = function() return "每日自动更新：" .. (self.auto_enabled and "开" or "关") end, sub_item_table = ut }
 
